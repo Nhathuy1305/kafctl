@@ -29,8 +29,10 @@ func (g *TokenProviderRPC) Token() (string, error) {
 }
 
 func (g *TokenProviderRPC) Init(options map[string]any, brokers []string) error {
+	// Don't expect a response, just use interface{}
 	var resp interface{}
 
+	// workaround for passing map of map
 	args := options
 	args["brokers"] = brokers
 
@@ -41,6 +43,7 @@ func (g *TokenProviderRPC) Init(options map[string]any, brokers []string) error 
 	return g.client.Call("Plugin.Init", args, &resp)
 }
 
+// TokenProviderRPCServer is the rpc server, which is a wrapper around the actual plugin implementation
 type TokenProviderRPCServer struct {
 	Impl AccessTokenProvider
 }
