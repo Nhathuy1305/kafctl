@@ -2,6 +2,8 @@ package internal
 
 import (
 	"github.com/IBM/sarama"
+	"kafctl/internal/helpers/avro"
+	"kafctl/internal/helpers/protobuf"
 	"regexp"
 	"time"
 )
@@ -92,4 +94,10 @@ type ClientContext struct {
 type Config struct {
 	Name  string
 	Value string
+}
+
+func CreateClientContext() (ClientContext, error) {
+	//var context ClientContext
+
+	//context.Name =
 }
