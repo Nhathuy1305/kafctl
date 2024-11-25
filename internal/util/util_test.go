@@ -31,13 +31,13 @@ func TestTimestamp(t *testing.T) {
 
 func TestStringArraysEqual(t *testing.T) {
 	var reference = []string{"a", "b", "c"}
-	var differents = [][]string{
+	var differences = [][]string{
 		{"c", "a", "b"},
 		{"a", "a", "a"},
 		{"a"},
 	}
 
-	for _, different := range differents {
+	for _, different := range differences {
 		if StringArraysEqual(reference, different) {
 			t.Fatalf("Only arrays with the same elements in the same order are considered equal. %s : %s", reference, different)
 		}
