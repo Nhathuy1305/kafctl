@@ -12,6 +12,7 @@ require (
 	github.com/spf13/viper v1.19.0
 	github.com/xdg-go/scram v1.1.2
 	google.golang.org/protobuf v1.34.2
+	gopkg.in/errgo.v2 v2.1.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
