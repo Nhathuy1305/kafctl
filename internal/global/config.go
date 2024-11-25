@@ -18,15 +18,15 @@ type Flags struct {
 const defaultContextPrefix = "CONTEXT_DEFAULT_"
 const GoContextKey = "global-config"
 
-var projectConfigNames = []string{"kafkactl.yml", ".kafkactl.yml"}
+var projectConfigNames = []string{"kafctl.yml", ".kafctl.yml"}
 
 var configPaths = []string{
-	"$HOME/.config/kafkactl",
-	"$HOME/.kafkactl",
-	"$APPDATA/kafkactl",
-	"$SNAP_REAL_HOME/.config/kafkactl",
-	"$SNAP_DATA/kafkactl",
-	"/etc/kafkactl",
+	"$HOME/.config/kafctl",
+	"$HOME/.kafctl",
+	"$APPDATA/kafctl",
+	"$SNAP_REAL_HOME/.config/kafctl",
+	"$SNAP_DATA/kafctl",
+	"/etc/kafctl",
 }
 
 var configInstance *config

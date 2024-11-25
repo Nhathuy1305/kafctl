@@ -39,5 +39,5 @@ type IOStreams struct {
 
 func (streams *IOStreams) EnableDebug() {
 	sarama.Logger = CreateLogger(streams.DebugOut, "sarama")
-	DebugLogger = CreateLogger(streams.DebugOut, "kafkactl")
+	DebugLogger = CreateLogger(streams.DebugOut, "kafctl")
 }

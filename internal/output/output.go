@@ -10,7 +10,7 @@ import (
 	"os"
 )
 
-var DebugLogger StdLogger = CreateLogger(io.Discard, "kafkactl")
+var DebugLogger StdLogger = CreateLogger(io.Discard, "kafctl")
 var TestLogger StdLogger = CreateLogger(io.Discard, "test")
 
 // StdLogger is used to log error message.
