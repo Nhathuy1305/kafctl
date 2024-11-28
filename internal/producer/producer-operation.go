@@ -270,11 +270,30 @@ func applyProducerConfigs(config *sarama.Config, clientContext internal.ClientCo
 }
 
 func stdinAvailable() bool {
-
+	stat, _ := os.Stdin.Stat()
+	return (stat.Mode() & os.ModeCharDevice) == 0
 }
 
 func splitAt(delimiter string) func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		// Return nothing if at end of file and no data passed
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
 
+		// Find the index of the input of the separator delimiter
+		if i := strings.Index(string(data), delimiter); i >= 0 {
+			return i + len(delimiter), data[0:i], nil
+		}
+
+		// If we're at EOF, we have a final, non-terminated line. Return it.
+		if atEOF {
+			return len(data), data, nil
+		}
+
+		// Request more data
+		return 0, nil, nil
+	}
 }
 
 func failWithMessageCount(messageCount int, errorMessage string, args ...interface{}) error {
@@ -283,9 +302,42 @@ func failWithMessageCount(messageCount int, errorMessage string, args ...interfa
 }
 
 func parsePartitioner(partitioner string, flags Flags) (sarama.PartitionerConstructor, error) {
-
+	switch partitioner {
+	case "":
+		if flags.Partition >= 0 {
+			return sarama.NewManualPartitioner, nil
+		}
+		return NewJVMCompatiblePartitioner, nil
+	case "murmur2":
+		// https://github.com/IBM/sarama/issues/1424
+		return NewJVMCompatiblePartitioner, nil
+	case "hash":
+		return sarama.NewHashPartitioner, nil
+	case "hash-ref":
+		return sarama.NewReferenceHashPartitioner, nil
+	case "random":
+		return sarama.NewRandomPartitioner, nil
+	case "manual":
+		if flags.Partition == -1 {
+			return nil, errors.New("partition is required when partitioning manually")
+		}
+		return sarama.NewManualPartitioner, nil
+	default:
+		return nil, errors.Errorf("partitioner %s not supported", flags.Partitioner)
+	}
 }
 
 func parseRequiredAcks(requiredAcks string) (sarama.RequiredAcks, error) {
-
+	switch requiredAcks {
+	case "NoResponse":
+		return sarama.NoResponse, nil
+	case "WaitForAll":
+		return sarama.WaitForAll, nil
+	case "WaitForLocal":
+		fallthrough
+	case "":
+		return sarama.WaitForLocal, nil
+	default:
+		return sarama.WaitForLocal, errors.Errorf("unknown required-acks setting: %s", requiredAcks)
+	}
 }
