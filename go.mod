@@ -9,16 +9,19 @@ require (
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.6.2
 	github.com/jhump/protoreflect v1.15.1
+	github.com/linkedin/goavro/v2 v2.12.0
 	github.com/pkg/errors v0.9.1
 	github.com/riferrei/srclient v0.7.0
 	github.com/spf13/viper v1.19.0
 	github.com/xdg-go/scram v1.1.2
+	go.uber.org/ratelimit v0.3.1
 	google.golang.org/protobuf v1.34.2
 	gopkg.in/errgo.v2 v2.1.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
+	github.com/benbjohnson/clock v1.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/eapache/go-resiliency v1.7.0 // indirect
 	github.com/eapache/go-xerial-snappy v0.0.0-20230731223053-c322873962e3 // indirect
@@ -37,7 +40,6 @@ require (
 	github.com/jcmturner/gokrb5/v8 v8.4.4 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
-	github.com/linkedin/goavro/v2 v2.12.0 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

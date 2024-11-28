@@ -1,5 +1,21 @@
 package producer
 
+import (
+	"bufio"
+	"github.com/IBM/sarama"
+	"github.com/pkg/errors"
+	"go.uber.org/ratelimit"
+	"io"
+	"kafctl/internal"
+	"kafctl/internal/output"
+	"kafctl/internal/producer/input"
+	"kafctl/internal/util"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+)
+
 type Flags struct {
 	Partitioner        string
 	RequiredAcks       string
@@ -24,4 +40,252 @@ type Flags struct {
 	ProtosetFiles      []string
 	KeyProtoType       string
 	ValueProtoType     string
+}
+
+const DefaultMaxMessagesBytes = 1000000
+
+type Operation struct{}
+
+func (operation *Operation) Produce(topic string, flags Flags) error {
+	var (
+		clientContext internal.ClientContext
+		err           error
+	)
+
+	if clientContext, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	config, err := internal.CreateClientConfig(&clientContext)
+	if err != nil {
+		return err
+	}
+
+	// For implementation reasons, the SyncProducer requires `Producer.Return.Errors` and `Producer.Return.Successes` to
+	// be set to true in its configuration
+	config.Producer.Return.Errors = true
+	config.Producer.Return.Successes = true
+
+	if err = applyProducerConfigs(config, clientContext, flags); err != nil {
+		return err
+	}
+
+	if flags.Separator != "" && (flags.Key != "" || flags.Value != "") {
+		return errors.New("separator is used to split input from stdin/file. it cannot be used together with key or value")
+	}
+
+	serializers := MessageSerializerChain{topic: topic}
+
+	if clientContext.Avro.SchemaRegistry != "" {
+		client, err := internal.CreateAvroSchemaRegistryClient(&clientContext)
+		if err != nil {
+			return err
+		}
+		serializer := AvroMessageSerializer{topic: topic, client: client, jsonCodec: clientContext.Avro.JSONCodec}
+
+		serializers.serializers = append(serializers.serializers, serializer)
+	}
+
+	if flags.KeyProtoType != "" || flags.ValueProtoType != "" {
+		context := clientContext.Protobuf
+		context.ProtosetFiles = append(flags.ProtosetFiles, context.ProtosetFiles...)
+		context.ProtoFiles = append(flags.ProtoFiles, context.ProtoFiles...)
+		context.ProtoImportPaths = append(flags.ProtoImportPaths, context.ProtoImportPaths...)
+
+		serializer, err := CreateProtobufMessageSerializer(topic, context, flags.KeyProtoType, flags.ValueProtoType)
+		if err != nil {
+			return err
+		}
+
+		serializers.serializers = append(serializers.serializers, serializer)
+	}
+
+	serializers.serializers = append(serializers.serializers, DefaultMessageSerializer{topic: topic})
+
+	output.Debugf("producer config: %+v", config.Producer)
+	producer, err := sarama.NewSyncProducer(clientContext.Brokers, config)
+	if err != nil {
+		return errors.Wrap(err, "Failed to open Kafka producer")
+	}
+	defer func() {
+		if err := producer.Close(); err != nil {
+			output.Warnf("Failed to close Kafka producer cleanly: %s", err)
+		}
+	}()
+
+	var inputMessage input.Message
+
+	if flags.Key != "" && flags.Separator != "" {
+		return errors.New("parameters --key and --separator cannot be used together")
+	}
+
+	if flags.NullValue && flags.Value != "" {
+		return errors.New("parameters --null-value and --value cannot be used together")
+	}
+
+	if flags.NullValue || flags.Value != "" {
+		// produce a single message
+		var message *sarama.ProducerMessage
+
+		if flags.NullValue {
+			message, err = serializers.Serialize([]byte(flags.Key), nil, flags)
+		} else {
+			message, err = serializers.Serialize([]byte(flags.Key), []byte(flags.Value), flags)
+		}
+
+		if err != nil {
+			return errors.Wrap(err, "Failed to produce message")
+		}
+		partition, offset, err := producer.SendMessage(message)
+		if err != nil {
+			return errors.Wrap(err, "Failed to produce message")
+		} else if !flags.Silent {
+			output.Infof("message produced (partition=%d\toffset=%d)\n", partition, offset)
+		}
+	} else if flags.File != "" || stdinAvailable() {
+		cancel := make(chan struct{})
+
+		go func() {
+			signals := make(chan os.Signal, 1)
+			signal.Notify(signals, syscall.SIGTERM, os.Interrupt)
+			<-signals
+			close(cancel)
+		}()
+
+		messageCount := 0
+
+		// print an empty line that will be replaced when updating the status
+		output.Statusf("")
+
+		var rl ratelimit.Limiter
+
+		if flags.RateInSeconds == -1 {
+			output.Debugf("No rate limiting was set, running without constraints")
+			rl = ratelimit.NewUnlimited()
+		} else {
+			rl = ratelimit.New(flags.RateInSeconds) // per second
+		}
+
+		var inputReader io.Reader
+		var inputParser input.Parser
+
+		if flags.File != "" {
+			inputReader, err = os.Open(flags.File)
+			if err != nil {
+				return errors.Errorf("unable to read input file %s: %v", flags.File, err)
+			}
+		} else {
+			inputReader = os.Stdin
+		}
+
+		if flags.InputFormat == "json" {
+			inputParser = input.NewJSONParser()
+		} else {
+			inputParser = input.NewCsvParser(flags.Key, flags.Separator)
+		}
+
+		scanner := bufio.NewScanner(inputReader)
+		scanner.Buffer(make([]byte, 0, config.Producer.MaxMessageBytes), config.Producer.MaxMessageBytes)
+
+		if len(flags.LineSeparator) > 0 && flags.LineSeparator != "\n" {
+			scanner.Split(splitAt(util.ConvertControlChars(flags.LineSeparator)))
+		}
+
+		for scanner.Scan() {
+			select {
+			case <-cancel:
+				break
+			default:
+			}
+
+			line, err := scanner.Text(), scanner.Err()
+			if err != nil {
+				return failWithMessageCount(messageCount, "Failed to read data from the standard input: %v", err)
+			}
+
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+
+			if inputMessage, err = inputParser.ParseLine(line); err != nil {
+				return failWithMessageCount(messageCount, err.Error())
+			}
+
+			messageCount++
+			message, err := serializers.Serialize([]byte(inputMessage.Key), []byte(inputMessage.Value), flags)
+			if err != nil {
+				return errors.Wrap(err, "Failed to produce message")
+			}
+			rl.Take()
+			_, _, err = producer.SendMessage(message)
+			if err != nil {
+				return failWithMessageCount(messageCount, "Failed to produce message: %s", err)
+			} else if !flags.Silent {
+				if messageCount%100 == 0 {
+					output.Statusf("\r%d messages produced", messageCount)
+				}
+			}
+		}
+
+		if scanner.Err() != nil {
+			return errors.Wrap(scanner.Err(), "error reading input (try specifying --max-message-bytes when producing long messages)")
+		}
+
+		output.Infof("\r%d messages produced", messageCount)
+	} else {
+		return errors.New("value is required, or you have to provide the value on stdin")
+	}
+	return nil
+}
+
+func applyProducerConfigs(config *sarama.Config, clientContext internal.ClientContext, flags Flags) error {
+	var err error
+
+	partitioner := clientContext.Producer.Partitioner
+	if flags.Partitioner != "" {
+		partitioner = flags.Partitioner
+	}
+
+	if config.Producer.Partitioner, err = parsePartitioner(partitioner, flags); err != nil {
+		return err
+	}
+
+	requiredAcks := clientContext.Producer.RequiredAcks
+	if flags.RequiredAcks != "" {
+		requiredAcks = flags.RequiredAcks
+	}
+
+	if config.Producer.RequiredAcks, err = parseRequiredAcks(requiredAcks); err != nil {
+		return err
+	}
+
+	maxMessageBytes := DefaultMaxMessagesBytes
+	if flags.MaxMessageBytes > 0 {
+		maxMessageBytes = flags.MaxMessageBytes
+	}
+
+	config.Producer.MaxMessageBytes = maxMessageBytes
+
+	return nil
+}
+
+func stdinAvailable() bool {
+
+}
+
+func splitAt(delimiter string) func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+
+}
+
+func failWithMessageCount(messageCount int, errorMessage string, args ...interface{}) error {
+	output.Infof("\r%d messages produced", messageCount)
+	return errors.Errorf(errorMessage, args...)
+}
+
+func parsePartitioner(partitioner string, flags Flags) (sarama.PartitionerConstructor, error) {
+
+}
+
+func parseRequiredAcks(requiredAcks string) (sarama.RequiredAcks, error) {
+
 }
