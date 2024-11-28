@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"crypto/tls"
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
 	"github.com/riferrei/srclient"
@@ -11,6 +12,7 @@ import (
 	"kafctl/internal/helpers/avro"
 	"kafctl/internal/helpers/protobuf"
 	"kafctl/internal/output"
+	"net/http"
 	"os/user"
 	"regexp"
 	"strings"
@@ -251,7 +253,36 @@ func CreateClientConfig(context *ClientContext) (*sarama.Config, error) {
 }
 
 func CreateAvroSchemaRegistryClient(context *ClientContext) (srclient.ISchemaRegistryClient, error) {
+	timeout := context.Avro.RequestTimeout
 
+	if context.Avro.RequestTimeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	httpClient := &http.Client{Timeout: timeout}
+
+	if context.Avro.TLS.Enabled {
+		output.Debugf("avro TLS is enabled.")
+
+		tlsConfig, err := setupTLSConfig(context.Avro.TLS)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to setup avro tls config")
+		}
+
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: tlsConfig,
+		}
+	}
+
+	baseURL := avro.FormatBaseURL(context.Avro.SchemaRegistry)
+	client := srclient.CreateSchemaRegistryClientWithOptions(baseURL, httpClient, 16)
+
+	if context.Avro.Username != "" {
+		output.Debugf("avro BasicAuth is enabled.")
+		client.SetCredentials(context.Avro.Username, context.Avro.Password)
+	}
+
+	return client, nil
 }
 
 func GetClientID(context *ClientContext, defaultPrefix string) string {
@@ -270,6 +301,15 @@ func GetClientID(context *ClientContext, defaultPrefix string) string {
 }
 
 func sanitizeUsername(u string) string {
+	// Windows user may have format "DOMAIN|MACHINE\username", remove domain/machine if present
+	s := strings.Split(u, "\\")
+	u = s[len(s)-1]
+	// Windows account can contain spaces or other special characters not supported
+	// in client ID. Keep the bare minimum and ditch the rest.
+	return invalidClientIDCharactersRegExp.ReplaceAllString(u, "")
+}
+
+func setupTLSConfig(tlsConfig TLSConfig) (*tls.Config, error) {
 
 }
 
