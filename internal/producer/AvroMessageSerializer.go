@@ -90,7 +90,7 @@ func (serializer AvroMessageSerializer) CanSerialize(topic string) (bool, error)
 	return false, nil
 }
 
-func (serializer AvroMessageSerializer) Serializer(key, value []byte, flags Flags) (*sarama.ProducerMessage, error) {
+func (serializer AvroMessageSerializer) Serialize(key, value []byte, flags Flags) (*sarama.ProducerMessage, error) {
 	recordHeaders, err := createRecordHeaders(flags)
 	if err != nil {
 		return nil, err
