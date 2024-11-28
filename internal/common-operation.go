@@ -3,11 +3,17 @@ package internal
 import (
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
+	"github.com/riferrei/srclient"
 	"github.com/spf13/viper"
+	"kafctl/internal/auth"
 	"kafctl/internal/global"
+	"kafctl/internal/helpers"
 	"kafctl/internal/helpers/avro"
 	"kafctl/internal/helpers/protobuf"
+	"kafctl/internal/output"
+	"os/user"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -176,9 +182,97 @@ func CreateClientContext() (ClientContext, error) {
 	return context, nil
 }
 
-//	func CreateClient(context *ClientContext) (sarama.Client, error) {
-//		config, err := CreateClient
-//	}
+func CreateClient(context *ClientContext) (sarama.Client, error) {
+	config, err := CreateClientConfig(context)
+	if err == nil {
+		return sarama.NewClient(context.Brokers, config)
+	}
+	return nil, err
+}
+
+func CreateClusterAdmin(context *ClientContext) (sarama.ClusterAdmin, error) {
+	config, err := CreateClientConfig(context)
+	if err == nil {
+		return sarama.NewClusterAdmin(context.Brokers, config)
+	}
+	return nil, err
+}
+
+func CreateClientConfig(context *ClientContext) (*sarama.Config, error) {
+	var config = sarama.NewConfig()
+	config.Version = context.KafkaVersion
+	config.ClientID = GetClientID(context, "kafctl-")
+
+	if context.RequestTimeout > 0 {
+		output.Debugf("using admin request timeout: %s", context.RequestTimeout.String())
+		config.Admin.Timeout = context.RequestTimeout
+	} else {
+		output.Debugf("using default admin request timeout: 3s")
+	}
+
+	if context.TLS.Enabled {
+		output.Debugf("SASL is enabled (usename = %s)", context.Sasl.Username)
+	} else {
+		output.Debugf("SASL is enabled")
+	}
+	config.Net.SASL.Enable = true
+	config.Net.SASL.User = context.Sasl.Username
+	config.Net.SASL.Password = context.Sasl.Password
+	switch context.Sasl.Mechanism {
+	case "scram-sha512":
+		config.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+		config.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+			return &helpers.XDGSCRAMClient{HashGeneratorFcn: helpers.SHA512}
+		}
+	case "scram-sha256":
+		config.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA256
+		config.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+			return &helpers.XDGSCRAMClient{HashGeneratorFcn: helpers.SHA256}
+		}
+	case "oauth":
+		config.Net.SASL.Mechanism = sarama.SASLTypeOAuth
+	case "plaintext":
+		fallthrough
+	case "":
+		break
+	default:
+		return nil, errors.Errorf("Unknown sasl mechanism: %s", context.Sasl.Mechanism)
+	}
+
+	if config.Net.SASL.Mechanism == sarama.SASLTypeOAuth {
+		tokenProvider, err := auth.LoadTokenProviderPlugin(context.Sasl.TokenProvider.PluginName, context.Sasl.TokenProvider.Options, context.Brokers)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to load tokenProvider")
+		}
+		config.Net.SASL.TokenProvider = tokenProvider
+	}
+
+	return config, nil
+}
+
+func CreateAvroSchemaRegistryClient(context *ClientContext) (srclient.ISchemaRegistryClient, error) {
+
+}
+
+func GetClientID(context *ClientContext, defaultPrefix string) string {
+	var (
+		err error
+		usr *user.User
+	)
+
+	if context.ClientID != "" {
+		return context.ClientID
+	} else if usr, err = user.Current(); err != nil {
+		output.Warnf("Failed to read current user: %v", err)
+		return strings.TrimSuffix(defaultPrefix, "-")
+	}
+	return defaultPrefix + sanitizeUsername(usr.Username)
+}
+
+func sanitizeUsername(u string) string {
+
+}
+
 func kafkaVersion(s string) (sarama.KafkaVersion, error) {
 
 }
