@@ -2,6 +2,8 @@ package internal
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
 	"github.com/riferrei/srclient"
@@ -13,6 +15,7 @@ import (
 	"kafctl/internal/helpers/protobuf"
 	"kafctl/internal/output"
 	"net/http"
+	"os"
 	"os/user"
 	"regexp"
 	"strings"
@@ -309,10 +312,122 @@ func sanitizeUsername(u string) string {
 	return invalidClientIDCharactersRegExp.ReplaceAllString(u, "")
 }
 
+// setupTLSConfig takes the paths to a tls certificate, CA, and certificate key in
+// a PEM format and returns a constructed tls.Config object.
 func setupTLSConfig(tlsConfig TLSConfig) (*tls.Config, error) {
+	if !tlsConfig.Enabled {
+		return nil, errors.Errorf("tls should be enabled at this point")
+	}
 
+	caPool, err := x509.SystemCertPool()
+	if err != nil {
+		output.Warnf("error reading system cert pool: %v", err)
+		caPool = x509.NewCertPool()
+	}
+
+	if tlsConfig.CA != "" {
+		caString, err := os.ReadFile(tlsConfig.CA)
+		if err != nil {
+			return nil, err
+		}
+
+		ok := caPool.AppendCertsFromPEM(caString)
+		if !ok {
+			return nil, errors.Errorf("unable to add ca at %s to certificate pool", tlsConfig.CA)
+		}
+	}
+
+	var clientCert tls.Certificate
+
+	if tlsConfig.Cert != "" && tlsConfig.CertKey != "" {
+		clientCert, err = tls.LoadX509KeyPair(tlsConfig.Cert, tlsConfig.CertKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	bundle := &tls.Config{
+		RootCAs:      caPool,
+		Certificates: []tls.Certificate{clientCert},
+	}
+
+	if tlsConfig.Insecure {
+		bundle.InsecureSkipVerify = true
+	}
+
+	return bundle, nil
 }
 
 func kafkaVersion(s string) (sarama.KafkaVersion, error) {
+	if s == "" {
+		output.Debugf("Assuming kafkaVersion: %s", sarama.V2_5_0_0)
+		return sarama.V2_5_0_0, nil
+	}
 
+	v, err := sarama.ParseKafkaVersion(strings.TrimPrefix(s, "v"))
+	if err != nil {
+		return sarama.KafkaVersion{}, err
+	}
+
+	output.Debugf("Using kafkaVersion: %s", v)
+
+	return v, nil
+}
+
+func TopicExists(client *sarama.Client, name string) (bool, error) {
+	var (
+		err    error
+		topics []string
+	)
+
+	if topics, err = (*client).Topics(); err != nil {
+		return false, errors.Wrap(err, "failed to read topics")
+	}
+
+	for _, topic := range topics {
+		if topic == name {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func ListConfigs(admin *sarama.ClusterAdmin, resource sarama.ConfigResource, includeDefaults bool) ([]Config, error) {
+	var (
+		configEntries []sarama.ConfigEntry
+		err           error
+	)
+
+	if configEntries, err = (*admin).DescribeConfig(resource); err != nil {
+		return nil, errors.Wrap(err, fmt.Sprintf("failed to describe %v config", getResourceTypeName(resource.Type)))
+	}
+
+	return listConfigsFromEntries(configEntries, includeDefaults), nil
+}
+
+func listConfigsFromEntries(configEntries []sarama.ConfigEntry, includeDefaults bool) []Config {
+	var configs = make([]Config, 0)
+
+	for _, configEntry := range configEntries {
+		if includeDefaults || (!configEntry.Default && configEntry.Source != sarama.SourceDefault) {
+			entry := Config{Name: configEntry.Name, Value: configEntry.Value}
+			configs = append(configs, entry)
+		}
+	}
+
+	return configs
+}
+
+func getResourceTypeName(resourceType sarama.ConfigResourceType) string {
+	switch resourceType {
+	case sarama.TopicResource:
+		return "topic"
+	case sarama.BrokerResource:
+		return "broker"
+	case sarama.BrokerLoggerResource:
+		return "brokerLogger"
+	default:
+		return "unknown"
+	}
 }
