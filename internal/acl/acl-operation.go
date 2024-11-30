@@ -240,7 +240,81 @@ func (operation *Operation) CreateACL(flags CreateACLFlags) error {
 }
 
 func (operation *Operation) DeleteACL(flags DeleteACLFlags) error {
+	var (
+		ctx         internal.ClientContext
+		err         error
+		admin       sarama.ClusterAdmin
+		matchingACL []sarama.MatchingAcl
+	)
 
+	if ctx, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&ctx); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	if flags.Operation == "" {
+		return errors.New("no operation has been specified")
+	}
+
+	if flags.PatternType == "" {
+		return errors.New("no pattern has been specified")
+	}
+
+	if flags.Allow && flags.Deny {
+		return errors.New("--allow and --deny cannot be provided both")
+	}
+
+	if !xor(flags.Topics, flags.Groups, flags.Cluster) {
+		return errors.New("either --topic or --group or --cluster has to be provided")
+	}
+
+	permissionType := sarama.AclPermissionAny
+	if flags.Deny {
+		permissionType = sarama.AclPermissionDeny
+	} else if flags.Allow {
+		permissionType = sarama.AclPermissionAllow
+	}
+
+	filter := sarama.AclFilter{
+		PermissionType: permissionType,
+		Operation:      operationFromString(flags.Operation),
+	}
+
+	if flags.Topics {
+		filter.ResourceType = sarama.AclResourceTopic
+		filter.ResourcePatternTypeFilter = patternTypeFromString(flags.PatternType)
+	} else if flags.Groups {
+		filter.ResourceType = sarama.AclResourceGroup
+		filter.ResourcePatternTypeFilter = patternTypeFromString(flags.PatternType)
+	} else {
+		filter.ResourceType = sarama.AclResourceCluster
+		filter.ResourcePatternTypeFilter = patternTypeFromString(flags.PatternType)
+	}
+
+	if matchingACL, err = admin.DeleteACL(filter, flags.ValidateOnly); err != nil {
+		return errors.Wrap(err, "failed to delete acl")
+	}
+
+	aclList := make([]ResourceACLEntry, 0)
+
+	for _, acl := range matchingACL {
+		resourceACL := ResourceACLEntry{
+			ResourceType: resourceTypeToString(acl.ResourceType),
+			ResourceName: acl.ResourceName,
+			PatternType:  patternTypeToString(acl.ResourcePatternType),
+			Acls:         make([]Entry, 1),
+		}
+		resourceACL.Acls[0].Principal = acl.Principal
+		resourceACL.Acls[0].Host = acl.Host
+		resourceACL.Acls[0].Operation = operationToString(acl.Operation)
+		resourceACL.Acls[0].PermissionType = permissionTypeToString(acl.PermissionType)
+		aclList = append(aclList, resourceACL)
+	}
+
+	return printResourceAcls("", aclList...)
 }
 
 func xor(values ...bool) bool {
