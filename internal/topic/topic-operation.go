@@ -1,10 +1,14 @@
 package topic
 
 import (
+	"encoding/json"
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
+	"gopkg.in/yaml.v2"
 	"kafctl/internal"
+	"kafctl/internal/output"
 	"os"
+	"path"
 	"strings"
 )
 
@@ -110,5 +114,107 @@ func (operation *Operation) CreateTopics(topics []string, flags CreateTopicFlags
 		}
 
 		fileTopicConfig := Topic{}
+		ext := path.Ext(flags.File)
+		var unmarshalErr error
+		switch ext {
+		case ".yml", ".yaml":
+			unmarshalErr = yaml.Unmarshal(fileContent, &fileTopicConfig)
+		case ".json":
+			unmarshalErr = json.Unmarshal(fileContent, &fileTopicConfig)
+		default:
+			return errors.Wrapf(err, "unsupported file format '%s'", ext)
+		}
+		if unmarshalErr != nil {
+			return errors.Wrap(err, "could not unmarshal config file")
+		}
+
+		numPartitions := int32(len(fileTopicConfig.Partitions))
+		if flags.Partitions == 1 {
+			topicDetails.NumPartitions = numPartitions
+		}
+
+		replicationFactors := map[int16]struct{}{}
+		for _, partition := range fileTopicConfig.Partitions {
+			replicationFactors[int16(len(partition.Replicas))] = struct{}{}
+		}
+		if flags.ReplicationFactor == -1 && len(replicationFactors) == 1 {
+			topicDetails.ReplicationFactor = int16(len(fileTopicConfig.Partitions[0].Replicas))
+		} else if flags.ReplicationFactor == -1 && len(replicationFactors) != 1 {
+			output.Warnf("replication factor from file ignored. partitions have different replicaCounts.")
+		}
+
+		for _, v := range fileTopicConfig.Configs {
+			if _, ok := topicDetails.ConfigEntries[v.Name]; !ok {
+				topicDetails.ConfigEntries[v.Name] = &v.Value
+			}
+		}
 	}
+
+	for _, topic := range topics {
+		if err = admin.CreateTopic(topic, &topicDetails, flags.ValidateOnly); err != nil {
+			return errors.Wrap(err, "failed to create topic")
+		}
+		output.Infof("topic created: %s", topic)
+	}
+	return nil
+}
+
+func (operation *Operation) DeleteTopics(topics []string) error {
+	var (
+		err     error
+		context internal.ClientContext
+		admin   sarama.ClusterAdmin
+	)
+
+	if context, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&context); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	for _, topic := range topics {
+		if err = admin.DeleteTopic(topic); err != nil {
+			return errors.Wrap(err, "failed to delete topic")
+		}
+		output.Infof("topic deleted: %s", topic)
+	}
+	return nil
+}
+
+func (operation *Operation) DescribeTopic(topic string, flags DescribeTopicFlags) error {
+	var (
+		context internal.ClientContext
+		client  sarama.Client
+		admin   sarama.ClusterAdmin
+		err     error
+		exists  bool
+		t       Topic
+	)
+
+	if context, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if client, err = internal.CreateClient(&context); err != nil {
+		return errors.Wrap(err, "failed to create client")
+	}
+
+	if exists, err = internal.TopicExists(&client, topic); err != nil {
+		return errors.Wrap(err, "failed to read topics")
+	}
+
+	if !exists {
+		return errors.Errorf("topic '%s' does not exist", topic)
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&context); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	fields := allFields
+	fields.config = flags.PrintConfigs
+
+	if t, err = readTo
 }
