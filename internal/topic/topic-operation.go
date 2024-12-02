@@ -216,5 +216,22 @@ func (operation *Operation) DescribeTopic(topic string, flags DescribeTopicFlags
 	fields := allFields
 	fields.config = flags.PrintConfigs
 
-	if t, err = readTo
+	if t, err = readTopic(&client, &admin, topic, fields); err != nil {
+		return errors.Wrap(err, "failed to read topic")
+	}
+
+	return operation.printTopic(t, flags)
+}
+
+func (operation *Operation) printTopic(topic Topic, flags DescribeTopicFlags) error {
+
+}
+
+func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, requestedFields requestedTopicFields) (Topic, error) {
+	var (
+		err error
+		ps  []int32
+		led *sarama.Broker
+		top = Topic{Name: name}
+	)
 }
