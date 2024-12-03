@@ -234,4 +234,21 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 		led *sarama.Broker
 		top = Topic{Name: name}
 	)
+
+	if !requestedFields.partitionID {
+		return top, nil
+	}
+
+	if ps, err = (*client).Partitions(name); err != nil {
+		return top, err
+	}
+
+	partitionChannel := make(chan Partition)
+
+	// read partitions in parallel
+	for _, p := range ps {
+		go func(partitionId int32) {
+			
+		}()
+	}
 }
