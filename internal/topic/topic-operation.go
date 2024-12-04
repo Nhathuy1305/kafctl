@@ -248,7 +248,13 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 	// read partitions in parallel
 	for _, p := range ps {
 		go func(partitionId int32) {
-			
-		}()
+			np := Partition{ID: partitionId}
+
+			if requestedFields.partitionOffset {
+				if np.OldestOffset, err = (*client).GetOffset(name, partitionId, sarama.OffsetOldest); err != nil {
+					output.Warnf("unable to read oldest offset for topic %s partition %d", name, partitionId)
+				}
+			}
+		}(p)
 	}
 }
