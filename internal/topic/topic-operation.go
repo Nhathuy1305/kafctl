@@ -254,6 +254,10 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 				if np.OldestOffset, err = (*client).GetOffset(name, partitionId, sarama.OffsetOldest); err != nil {
 					output.Warnf("unable to read oldest offset for topic %s partition %d", name, partitionId)
 				}
+
+				if np.NewestOffset, err = (*client).GetOffset(name, partitionId, sarama.OffsetNewest); err != nil {
+					output.Warnf("unable to read newest offset for topic %s partition %d", name, partitionId)
+				}
 			}
 		}(p)
 	}
