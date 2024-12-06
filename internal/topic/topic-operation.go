@@ -9,6 +9,7 @@ import (
 	"kafctl/internal/output"
 	"os"
 	"path"
+	"sort"
 	"strings"
 )
 
@@ -259,6 +260,59 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 					output.Warnf("unable to read newest offset for topic %s partition %d", name, partitionId)
 				}
 			}
+
+			if requestedFields.partitionLeader {
+				if led, err = (*client).Leader(name, partitionId); err != nil {
+					output.Warnf("unable to read leader for topic %s partition %d", name, partitionId)
+					np.Leader = "none"
+				} else {
+					np.Leader = led.Addr()
+				}
+			}
+
+			if requestedFields.partitionReplicas {
+				if np.Replicas, err = (*client).Replicas(name, partitionId); err != nil {
+					output.Warnf("unable to read replicas for topic %s partition %d", name, partitionId)
+				} else {
+					sort.Slice(np.Replicas, func(i, j int) bool {
+						return np.Replicas[i] < np.Replicas[j]
+					})
+				}
+			}
+
+			if requestedFields.partitionISRs {
+				if np.ISRs, err = (*client).InSyncReplicas(name, partitionId); err != nil {
+					output.Warnf("unable to read inSyncReplicas for topic %s partition %d", name, partitionId)
+				} else {
+					sort.Slice(np.ISRs, func(i, j int) bool {
+						return np.ISRs[i] < np.ISRs[j]
+					})
+				}
+			}
+
+			partitionChannel <- np
 		}(p)
 	}
+
+	for range ps {
+		partition := <-partitionChannel
+		top.Partitions = append(top.Partitions, partition)
+	}
+
+	sort.Slice(top.Partitions, func(i, j int) bool {
+		return top.Partitions[i].ID < top.Partitions[j].ID
+	})
+
+	if requestedFields.config != NoConfigs {
+		topicConfig := sarama.ConfigResource{
+			Type: sarama.TopicResource,
+			Name: name,
+		}
+
+		if top.Configs, err = internal.ListConfigs(admin, topicConfig, requestedFields.config == AllConfigs); err != nil {
+			return top, err
+		}
+	}
+
+	return top, nil
 }
