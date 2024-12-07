@@ -277,7 +277,7 @@ func (operation *Operation) printTopic(topic Topic, flags DescribeTopicFlags) er
 			replicas := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(p.Replicas)), ","), "[]")
 			inSyncReplicas := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(p.ISRs)), ","), "[]")
 			if err := partitionTableWriter.Write(strconv.Itoa(int(p.ID)), strconv.Itoa(int(p.OldestOffset)),
-				strconv.Itoa(int(p.NewestOffset)), strconv.FormatBool((p.NewestOffset - p.OldestOffset) <= 0), p.Leader, replicas, inSyncReplicas; err != nil {
+				strconv.Itoa(int(p.NewestOffset)), strconv.FormatBool((p.NewestOffset-p.OldestOffset) <= 0), p.Leader, replicas, inSyncReplicas); err != nil {
 				return err
 			}
 		}
