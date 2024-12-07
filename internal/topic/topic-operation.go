@@ -2,6 +2,7 @@ package topic
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -225,6 +227,72 @@ func (operation *Operation) DescribeTopic(topic string, flags DescribeTopicFlags
 }
 
 func (operation *Operation) printTopic(topic Topic, flags DescribeTopicFlags) error {
+	if flags.PrintConfigs == NoConfigs {
+		topic.Configs = nil
+	}
+
+	if len(topic.Configs) != 0 && flags.OutputFormat != "json" && flags.OutputFormat != "yaml" {
+		configTableWriter := output.CreateTableWriter()
+		if err := configTableWriter.WriteHeader("CONFIG", "VALUE"); err != nil {
+			return err
+		}
+
+		for _, c := range topic.Configs {
+			if err := configTableWriter.Write(c.Name, c.Value); err != nil {
+				return err
+			}
+		}
+
+		if err := configTableWriter.Flush(); err != nil {
+			return err
+		}
+		output.PrintStrings("")
+	}
+
+	if flags.SkipEmptyPartitions {
+		partitionsWithMessages := make([]Partition, 0)
+		for _, p := range topic.Partitions {
+			if p.OldestOffset < p.NewestOffset {
+				partitionsWithMessages = append(partitionsWithMessages, p)
+			}
+		}
+		topic.Partitions = partitionsWithMessages
+	}
+
+	partitionTableWriter := output.CreateTableWriter()
+
+	if flags.OutputFormat == "" || flags.OutputFormat == "wide" {
+		if err := partitionTableWriter.WriteHeader("PARTITION", "OLDEST_OFFSET", "NEWEST_OFFSET", "EMPTY",
+			"LEADER", "REPLICAS", "IN_SYNC_REPLICAS"); err != nil {
+			return err
+		}
+	} else if flags.OutputFormat != "json" && flags.OutputFormat != "yaml" {
+		return errors.Errorf("unknown outputFormat: %s", flags.OutputFormat)
+	}
+
+	if flags.OutputFormat == "json" || flags.OutputFormat == "yaml" {
+		return output.PrintObject(topic, flags.OutputFormat)
+	} else if flags.OutputFormat == "wide" || flags.OutputFormat == "" {
+		for _, p := range topic.Partitions {
+			replicas := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(p.Replicas)), ","), "[]")
+			inSyncReplicas := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(p.ISRs)), ","), "[]")
+			if err := partitionTableWriter.Write(strconv.Itoa(int(p.ID)), strconv.Itoa(int(p.OldestOffset)),
+				strconv.Itoa(int(p.NewestOffset)), strconv.FormatBool((p.NewestOffset - p.OldestOffset) <= 0), p.Leader, replicas, inSyncReplicas; err != nil {
+				return err
+			}
+		}
+	}
+
+	if flags.OutputFormat == "" || flags.OutputFormat == "wide" {
+		if err := partitionTableWriter.Flush(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (operation *Operation) AlterTopic(topic string, flags AlterTopicFlags) error {
 
 }
 
