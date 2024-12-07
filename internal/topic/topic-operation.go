@@ -293,7 +293,85 @@ func (operation *Operation) printTopic(topic Topic, flags DescribeTopicFlags) er
 }
 
 func (operation *Operation) AlterTopic(topic string, flags AlterTopicFlags) error {
+	var (
+		context internal.ClientContext
+		client  sarama.Client
+		admin   sarama.ClusterAdmin
+		err     error
+		exists  bool
+		t       Topic
+	)
 
+	if context, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if client, err = internal.CreateClient(&context); err != nil {
+		return errors.Wrap(err, "failed to create client")
+	}
+
+	if exists, err = internal.TopicExists(&client, topic); err != nil {
+		return errors.Wrap(err, "failed to read topics")
+	}
+
+	if !exists {
+		return errors.Errorf("topic '%s' does not exist", topic)
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&context); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	if t, err = readTopic(&client, &admin, topic, allFields); err != nil {
+		return errors.Wrap(err, "failed to read topic")
+	}
+
+	if flags.Partitions != 0 {
+		if len(t.Partitions) > int(flags.Partitions) {
+			return errors.New("Decreasing the number of partitions is not supported")
+		} else if len(t.Partitions) == int(flags.Partitions) {
+			return errors.Errorf("Topic already has %d partitions", flags.Partitions)
+		}
+
+		if flags.ValidateOnly {
+			for len(t.Partitions) < int(flags.Partitions) {
+				t.Partitions = append(t.Partitions, Partition{ID: int32(len(t.Partitions)), NewestOffset: 0, OldestOffset: 0})
+			}
+		} else {
+			var emptyAssignment = make([][]int32, 0)
+
+			err = admin.CreatePartitions(topic, flags.Partitions, emptyAssignment, flags.ValidateOnly)
+			if err != nil {
+				return errors.Errorf("Could not create partitions for topic '%s': %v", topic, err)
+			}
+			output.Infof("paritions have been created")
+		}
+	}
+
+	if flags.ReplicationFactor > 0 {
+		var brokers = client.Brokers()
+
+		if int(flags.ReplicationFactor) > len(brokers) {
+			return errors.Errorf("Replication factor for topic '%s' must not exceed the number of available brokers", topic)
+		}
+
+		brokerReplicaCount := make(map[int32]int)
+		for _, broker := range brokers {
+			brokerReplicaCount[broker.ID()] = 0
+		}
+
+		for _, partition := range t.Partitions {
+			for _, brokerID := range partition.Replicas {
+				brokerReplicaCount[brokerID]++
+			}
+		}
+
+		var replicaAssignment = make([][]int32, 0, int16(len(t.Partitions)))
+
+		//for _, partition := range t.Partitions {
+		//	var replicas, err = getTa
+		//}
+	}
 }
 
 func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, requestedFields requestedTopicFields) (Topic, error) {
