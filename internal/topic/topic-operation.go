@@ -470,7 +470,92 @@ func (operation *Operation) AlterTopic(topic string, flags AlterTopicFlags) erro
 }
 
 func (operation *Operation) ListTopicsNames() ([]string, error) {
+	var (
+		err     error
+		context internal.ClientContext
+		client  sarama.Client
+		topics  []string
+	)
 
+	if context, err = internal.CreateClientContext(); err != nil {
+		return nil, err
+	}
+
+	if client, err = internal.CreateClient(&context); err != nil {
+		return nil, errors.Wrap(err, "failed to create client")
+	}
+
+	if topics, err = client.Topics(); err != nil {
+		return nil, errors.Wrap(err, "failed to read topics")
+	}
+	return topics, nil
+}
+
+func (operation *Operation) CloneTopic(sourceTopic, targetTopic string) error {
+	var (
+		context internal.ClientContext
+		client  sarama.Client
+		admin   sarama.ClusterAdmin
+		err     error
+		exists  bool
+		t       Topic
+	)
+
+	if context, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if client, err = internal.CreateClient(&context); err != nil {
+		return errors.Wrap(err, "failed to create client")
+	}
+
+	if exists, err = internal.TopicExists(&client, sourceTopic); err != nil {
+		return errors.Wrap(err, "failed to read topics")
+	}
+
+	if !exists {
+		return errors.Errorf("topic '%s' does not exists", sourceTopic)
+	}
+
+	if exists, err = internal.TopicExists(&client, targetTopic); err != nil {
+		return errors.Wrap(err, "failed to read topics")
+	}
+
+	if exists {
+		return errors.Errorf("topic '%s' already exists", targetTopic)
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&context); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	requestedFields := requestedTopicFields{
+		partitionID:       true,
+		partitionReplicas: true,
+		config:            NonDefaultConfigs,
+	}
+
+	if t, err = readTopic(&client, &admin, sourceTopic, requestedFields); err != nil {
+		return errors.Errorf("unable to read topic '%s': %v", sourceTopic, err)
+	}
+
+	topicDetail := &sarama.TopicDetail{
+		NumPartitions:     int32(len(t.Partitions)),
+		ReplicationFactor: int16(replicationFactor(t)),
+		ConfigEntries:     make(map[string]*string, len(t.Configs)),
+	}
+
+	for _, configEntry := range t.Configs {
+		topicDetail.ConfigEntries[configEntry.Name] = &configEntry.Value
+	}
+
+	if err = admin.CreateTopic(targetTopic, topicDetail, false); err != nil {
+		return errors.Wrap(err, "failed to create topic")
+	}
+
+	output.Infof("topic %s cloned to %s", sourceTopic, targetTopic)
+
+	return nil
 }
 
 func getTargetReplicas(currentReplicas []int32, brokerReplicaCount map[int32]int, targetReplicationFactor int16) ([]int32, error) {
@@ -514,6 +599,10 @@ func getTargetReplicas(currentReplicas []int32, brokerReplicaCount map[int32]int
 	}
 
 	return replicas, nil
+}
+
+func (operation *Operation) GetTopics(flags GetTopicsFlags) error {
+
 }
 
 func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, requestedFields requestedTopicFields) (Topic, error) {
@@ -603,4 +692,16 @@ func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, r
 	}
 
 	return top, nil
+}
+
+// replicationFactor for topic calculated as minimal replication factor across partitions.
+func replicationFactor(t Topic) int {
+	var factor int
+	for _, partition := range t.Partitions {
+		if len(partition.Replicas) < factor || factor == 0 {
+			factor = len(partition.Replicas)
+		}
+	}
+
+	return factor
 }
