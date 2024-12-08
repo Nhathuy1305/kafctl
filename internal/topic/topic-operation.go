@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v2"
 	"kafctl/internal"
 	"kafctl/internal/output"
+	"kafctl/internal/util"
 	"os"
 	"path"
 	"sort"
@@ -368,10 +369,70 @@ func (operation *Operation) AlterTopic(topic string, flags AlterTopicFlags) erro
 
 		var replicaAssignment = make([][]int32, 0, int16(len(t.Partitions)))
 
-		//for _, partition := range t.Partitions {
-		//	var replicas, err = getTa
-		//}
+		for _, partition := range t.Partitions {
+			var replicas, err = getTargetReplicas(partition.Replicas, brokerReplicaCount, flags.ReplicationFactor)
+			if err != nil {
+				return errors.Wrap(err, "unable to determine target replicas")
+			}
+			replicaAssignment = append(replicaAssignment, replicas)
+		}
+
+		for brokerID, replicaCount := range brokerReplicaCount {
+			output.Debugf("broker %d now has %d replicas", brokerID, replicaCount)
+		}
+
+		if flags.ValidateOnly {
+			for i := range t.Partitions {
+				t.Partitions[i].Replicas = replicaAssignment[i]
+			}
+		} else {
+			err = admin.AlterPartitionReassignments(topic, replicaAssignment)
+			
+		}
 	}
+}
+
+func getTargetReplicas(currentReplicas []int32, brokerReplicaCount map[int32]int, targetReplicationFactor int16) ([]int32, error) {
+	replicas := currentReplicas
+
+	for len(replicas) > int(targetReplicationFactor) {
+		sort.Slice(replicas, func(i, j int) bool {
+			brokerI := replicas[i]
+			brokerJ := replicas[j]
+			return brokerReplicaCount[brokerI] < brokerReplicaCount[brokerJ] || (brokerReplicaCount[brokerI] == brokerReplicaCount[brokerJ] && brokerI < brokerJ)
+		})
+
+		lastReplica := replicas[len(replicas)-1]
+		replicas = replicas[:len(replicas)-1]
+		brokerReplicaCount[lastReplica]--
+	}
+
+	var unusedBrokerIDs []int32
+
+	if len(replicas) < int(targetReplicationFactor) {
+		for brokerID := range brokerReplicaCount {
+			if !util.ContainsInt32(replicas, brokerID) {
+				unusedBrokerIDs = append(unusedBrokerIDs, brokerID)
+			}
+		}
+		if len(unusedBrokerIDs) < (int(targetReplicationFactor) - len(replicas)) {
+			return nil, errors.New("not enough brokers")
+		}
+	}
+
+	for len(replicas) < int(targetReplicationFactor) {
+		sort.Slice(unusedBrokerIDs, func(i, j int) bool {
+			brokerI := unusedBrokerIDs[i]
+			brokerJ := unusedBrokerIDs[j]
+			return brokerReplicaCount[brokerI] < brokerReplicaCount[brokerJ] || (brokerReplicaCount[brokerI] == brokerReplicaCount[brokerJ] && brokerI > brokerJ)
+		})
+
+		replicas = append(replicas, unusedBrokerIDs[0])
+		brokerReplicaCount[unusedBrokerIDs[0]]++
+		unusedBrokerIDs = unusedBrokerIDs[1:]
+	}
+
+	return replicas, nil
 }
 
 func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, requestedFields requestedTopicFields) (Topic, error) {
