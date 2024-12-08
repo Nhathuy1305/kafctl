@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Topic struct {
@@ -387,9 +388,89 @@ func (operation *Operation) AlterTopic(topic string, flags AlterTopicFlags) erro
 			}
 		} else {
 			err = admin.AlterPartitionReassignments(topic, replicaAssignment)
-			
+			if err != nil {
+				return errors.Errorf("Could not reassign partition replicas for topic '%s': %v", topic, err)
+			}
+
+			partitions := make([]int32, len(t.Partitions))
+
+			for _, p := range t.Partitions {
+				partitions[0] = p.ID
+			}
+
+			assignmentRunning := true
+
+			for assignmentRunning {
+				status, err := admin.ListPartitionReassignments(topic, partitions)
+				if err != nil {
+					return errors.Errorf("Could not query reassignment status for topic '%s': %v", topic, err)
+				}
+
+				assignmentRunning = false
+
+				if statusTopic, ok := status[topic]; ok {
+					for partitionID, statusPartition := range statusTopic {
+						output.Infof("reassignment running for topic=%s partition=%d: replicas:%v addingReplicas:%v removingReplicas:%v",
+							topic, partitionID, statusPartition.Replicas, statusPartition.AddingReplicas, statusPartition.RemovingReplicas)
+						time.Sleep(5 * time.Second)
+						assignmentRunning = true
+					}
+				} else {
+					output.Debugf("Empty list partition reassignment result returned (len status: %d)", len(status))
+				}
+			}
+
+			output.Infof("partition replicas have been reassigned")
 		}
 	}
+
+	if len(flags.Configs) > 0 {
+		mergedConfigEntries := make(map[string]*string)
+
+		for i, config := range t.Configs {
+			mergedConfigEntries[config.Name] = &(t.Configs[i].Value)
+		}
+
+		for _, config := range flags.Configs {
+			configParts := strings.Split(config, "=")
+
+			if len(configParts) == 2 {
+				if len(configParts[1]) == 0 {
+					delete(mergedConfigEntries, configParts[0])
+				} else {
+					mergedConfigEntries[configParts[0]] = &configParts[1]
+				}
+			}
+		}
+
+		if flags.ValidateOnly {
+			// validate only - directly alter the response object
+			t.Configs = make([]internal.Config, 0, len(mergedConfigEntries))
+			for key, value := range mergedConfigEntries {
+				t.Configs = append(t.Configs, internal.Config{Name: key, Value: *value})
+			}
+		} else {
+			if err = admin.AlterConfig(sarama.TopicResource, topic, mergedConfigEntries, flags.ValidateOnly); err != nil {
+				return errors.Errorf("Could not alter topic config '%s': %v", topic, err)
+			}
+			output.Infof("config has ben altered")
+		}
+	}
+
+	if flags.ValidateOnly {
+		printConfigs := NoConfigs
+		if len(flags.Configs) > 0 {
+			printConfigs = NonDefaultConfigs
+		}
+		describeFlags := DescribeTopicFlags{PrintConfigs: printConfigs}
+		return operation.printTopic(t, describeFlags)
+	}
+
+	return nil
+}
+
+func (operation *Operation) ListTopicsNames() ([]string, error) {
+
 }
 
 func getTargetReplicas(currentReplicas []int32, brokerReplicaCount map[int32]int, targetReplicationFactor int16) ([]int32, error) {
