@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 	"kafctl/internal"
 	"kafctl/internal/output"
@@ -602,7 +603,127 @@ func getTargetReplicas(currentReplicas []int32, brokerReplicaCount map[int32]int
 }
 
 func (operation *Operation) GetTopics(flags GetTopicsFlags) error {
+	var (
+		err     error
+		context internal.ClientContext
+		client  sarama.Client
+		admin   sarama.ClusterAdmin
+		topics  []string
+	)
 
+	if context, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&context); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	if client, err = internal.CreateClient(&context); err != nil {
+		return errors.Wrap(err, "failed to create client")
+	}
+
+	if topics, err = client.Topics(); err != nil {
+		return errors.Wrap(err, "failed to read topics")
+	}
+
+	tableWriter := output.CreateTableWriter()
+	var requestedFields requestedTopicFields
+
+	if flags.OutputFormat == "" {
+		requestedFields = requestedTopicFields{partitionID: true, partitionReplicas: true}
+		if err := tableWriter.WriteHeader("TOPIC", "PARTITIONS", "REPLICATION FACTOR"); err != nil {
+			return err
+		}
+	} else if flags.OutputFormat == "compact" {
+		tableWriter.Initialize()
+	} else if flags.OutputFormat == "wide" {
+		requestedFields = requestedTopicFields{partitionID: true, partitionReplicas: true, config: NonDefaultConfigs}
+		if err := tableWriter.WriteHeader("TOPIC", "PARTITIONS", "REPLICATION FACTOR", "CONFIGS"); err != nil {
+			return err
+		}
+	} else if flags.OutputFormat == "json" {
+		requestedFields = allFields
+	} else if flags.OutputFormat == "yaml" {
+		requestedFields = allFields
+	} else {
+		return errors.Errorf("unknown outputFormat: %s", flags.OutputFormat)
+	}
+
+	topicChannel := make(chan Topic)
+	errChannel := make(chan error)
+
+	// read topics in parallel
+	for _, topic := range topics {
+		go func(topic string) {
+			t, err := readTopic(&client, &admin, topic, requestedFields)
+			if err != nil {
+				output.Debugf("failed to read topic %q: %v", topic, err)
+			}
+			topicChannel <- t
+		}(topic)
+	}
+
+	topicList := make([]Topic, 0, len(topics))
+	for range topics {
+		select {
+		case topic := <-topicChannel:
+			topicList = append(topicList, topic)
+		case err := <-errChannel:
+			return err
+		}
+	}
+
+	sort.Slice(topicList, func(i, j int) bool {
+		return topicList[i].Name < topicList[j].Name
+	})
+
+	if flags.OutputFormat == "json" || flags.OutputFormat == "yaml" {
+		return output.PrintObject(topicList, flags.OutputFormat)
+	} else if flags.OutputFormat == "wide" {
+		for _, t := range topicList {
+			if err := tableWriter.Write(t.Name, strconv.Itoa(len(t.Partitions)), strconv.Itoa(replicationFactor(t)), getConfigString(t.Configs)); err != nil {
+				return err
+			}
+		}
+	} else if flags.OutputFormat == "compact" {
+		for _, t := range topicList {
+			if err := tableWriter.Write(t.Name); err != nil {
+				return err
+			}
+		}
+	} else {
+		for _, t := range topicList {
+			if err := tableWriter.Write(t.Name, strconv.Itoa(len(t.Partitions)), strconv.Itoa(replicationFactor(t))); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (operation *Operation) DeleteRecords(topic string, flags DeleteRecordsFlags) error {
+	var (
+		err     error
+		context internal.ClientContext
+		admin   sarama.ClusterAdmin
+	)
+
+	if context, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&context); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	offsets, parseErr := util.ParseOffsets(flags.Offsets)
+	if parseErr != nil {
+		return parseErr
+	}
+
+	return admin.DeleteRecords(topic, offsets)
 }
 
 func readTopic(client *sarama.Client, admin *sarama.ClusterAdmin, name string, requestedFields requestedTopicFields) (Topic, error) {
@@ -704,4 +825,34 @@ func replicationFactor(t Topic) int {
 	}
 
 	return factor
+}
+
+func getConfigString(configs []internal.Config) string {
+	var configStrings []string
+
+	for _, config := range configs {
+		configStrings = append(configStrings, fmt.Sprintf("%s=%s", config.Name, config.Value))
+	}
+
+	return strings.Trim(strings.Join(configStrings, ","), "[]")
+}
+
+func CompleteTopicNames(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	topics, err := (&Operation{}).ListTopicsNames()
+
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	return topics, cobra.ShellCompDirectiveNoFileComp
+}
+
+func FromYaml(yamlString string) (Topic, error) {
+	var t Topic
+	err := yaml.Unmarshal([]byte(yamlString), &t)
+	return t, err
 }
