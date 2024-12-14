@@ -3,6 +3,7 @@ package acl
 import (
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
 	"kafctl/internal"
 	"kafctl/internal/output"
 )
@@ -358,4 +359,9 @@ func printResourceAcls(outputFormat string, aclList ...ResourceACLEntry) error {
 		}
 	}
 	return nil
+}
+
+func CompleteCreateACL(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+	output.Infof("complete")
+	return nil, cobra.ShellCompDirectiveError
 }
