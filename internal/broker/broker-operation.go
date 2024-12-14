@@ -108,5 +108,92 @@ func (operation *Operation) GetBrokers(flags GetBrokersFlags) error {
 }
 
 func (operation *Operation) DescribeBroker(id int32, flags DescribeBrokerFlags) error {
+	var (
+		err     error
+		context internal.ClientContext
+		client  sarama.Client
+		admin   sarama.ClusterAdmin
+	)
 
+	if context, err = internal.CreateClientContext(); err != nil {
+		return err
+	}
+
+	if client, err = internal.CreateClient(&context); err != nil {
+		return errors.Wrap(err, "failed to create client")
+	}
+
+	if admin, err = internal.CreateClusterAdmin(&context); err != nil {
+		return errors.Wrap(err, "failed to create cluster admin")
+	}
+
+	var broker *sarama.Broker
+
+	for _, aBroker := range client.Brokers() {
+		if aBroker.ID() == id {
+			broker = aBroker
+			break
+		}
+	}
+
+	if broker == nil {
+		return errors.Errorf("cannot find broker with id: %d", id)
+	}
+
+	var configs []internal.Config
+
+	brokerConfig := sarama.ConfigResource{
+		Type: sarama.BrokerResource,
+		Name: fmt.Sprint(broker.ID()),
+	}
+
+	if configs, err = internal.ListConfigs(&admin, brokerConfig, false); err != nil {
+		return err
+	}
+
+	brokerInfo := Broker{ID: broker.ID(), Address: broker.Addr(), Configs: configs}
+
+	if flags.OutputFormat == "json" || flags.OutputFormat == "yaml" {
+		return output.PrintObject(brokerInfo, flags.OutputFormat)
+	} else if flags.OutputFormat != "" && flags.OutputFormat != "wide" {
+		return errors.Errorf("unknown outputFormat: %s", flags.OutputFormat)
+	}
+
+	tableWriter := output.CreateTableWriter()
+
+	// write broker info table
+	if err := tableWriter.WriteHeader("ID", "ADDRESS"); err != nil {
+		return err
+	}
+
+	if err := tableWriter.Write(fmt.Sprint(brokerInfo.ID), brokerInfo.Address); err != nil {
+		return err
+	}
+
+	if err := tableWriter.Flush(); err != nil {
+		return err
+	}
+
+	output.PrintStrings("")
+
+	// first write config table
+	if err := tableWriter.WriteHeader("CONFIG", "VALUE"); err != nil {
+		return err
+	}
+
+	for _, c := range brokerInfo.Configs {
+		if err := tableWriter.Write(c.Name, c.Value); err != nil {
+			return err
+		}
+	}
+
+	if err := tableWriter.Flush(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (operation *Operation) listBrokerIDs() ([]string, error) {
+	
 }
