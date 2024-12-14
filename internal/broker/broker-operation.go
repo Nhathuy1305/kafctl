@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v2"
 	"kafctl/internal"
 	"kafctl/internal/output"
 	"sort"
@@ -195,5 +197,45 @@ func (operation *Operation) DescribeBroker(id int32, flags DescribeBrokerFlags) 
 }
 
 func (operation *Operation) listBrokerIDs() ([]string, error) {
-	
+	var (
+		err     error
+		context internal.ClientContext
+		client  sarama.Client
+	)
+
+	if context, err = internal.CreateClientContext(); err != nil {
+		return nil, err
+	}
+
+	if client, err = internal.CreateClient(&context); err != nil {
+		return nil, errors.Wrap(err, "failed to create client")
+	}
+
+	var brokerIDs = make([]string, 0)
+
+	for _, broker := range client.Brokers() {
+		brokerIDs = append(brokerIDs, fmt.Sprint(broker.ID()))
+	}
+
+	return brokerIDs, nil
+}
+
+func CompleteBrokerIDs(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	brokerIDs, err := (&Operation{}).listBrokerIDs()
+
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	return brokerIDs, cobra.ShellCompDirectiveNoFileComp
+}
+
+func FromYaml(yamlString string) (Broker, error) {
+	var broker Broker
+	err := yaml.Unmarshal([]byte(yamlString), &broker)
+	return broker, err
 }
